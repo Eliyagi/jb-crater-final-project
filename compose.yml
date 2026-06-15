@@ -1,0 +1,74 @@
+# Crater capstone — self-contained compose (does NOT merge labs/base/compose.yml).
+#
+# Ships only the upstream vendor mock:
+#   data-init           one-shot: downloads a contiguous window of hourly
+#                       GH Archive files into the gh-archive-cache volume.
+#                       Idempotent (skips files already on disk; writes a
+#                       _READY sentinel last).
+#   gh-archive-vendor   FastAPI service that reads from that volume read-only.
+#                       Serves GET /{YYYY-MM-DD-H}.json.gz gated by a
+#                       simulated clock; also /healthz, /stats, /simulated_now.
+#
+# Students add their own services (Kafka, Postgres, Spark, monitoring, etc.)
+# below. Container names and host ports are prefixed/shifted so this can
+# coexist with the main course `labs/` (which use the default ports).
+
+name: crater
+
+volumes:
+  gh-archive-cache:
+
+services:
+  data-init:
+    build: ./vendor
+    container_name: crater-data-init
+    command: ["python", "/app/download_and_preprocess.py", "/cache"]
+    volumes:
+      - gh-archive-cache:/cache
+    # Needs REPLAY_WINDOW_START/END (and optionally MAX_FILES_TO_DOWNLOAD for
+    # fast iteration) so it knows what slice to fetch.
+    env_file:
+      - .env
+    restart: "no"
+
+  gh-archive-vendor:
+    build: ./vendor
+    container_name: crater-gh-archive-vendor
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    depends_on:
+      data-init:
+        condition: service_completed_successfully
+    volumes:
+      # RW (not :ro) so the replay clock can persist `_replay_state.json`
+      # and resume across `docker compose restart`. Cached `.json.gz`
+      # files are never modified by the vendor — only the state file.
+      - gh-archive-cache:/cache
+    ports:
+      - "18400:8000"
+    # We don't use env_file here on purpose: env_file values always win over
+    # shell-exported vars, which would defeat `make vendor-chaos` (it exports
+    # the chaos knobs at the shell). Instead use compose variable substitution
+    # — values resolve from shell first, then from .env (compose loads it
+    # automatically), then from the inline default.
+    environment:
+      DATA_DIR: /cache
+      REPLAY_SECONDS_PER_HOUR: ${REPLAY_SECONDS_PER_HOUR:-2}
+      REPLAY_WINDOW_START: ${REPLAY_WINDOW_START:-2024-01-15}
+      REPLAY_WINDOW_END: ${REPLAY_WINDOW_END:-2024-01-21}
+      VENDOR_SLOW_FILE_RATE: ${VENDOR_SLOW_FILE_RATE:-0}
+      VENDOR_LATE_FILE_RATE: ${VENDOR_LATE_FILE_RATE:-0}
+      VENDOR_LATE_FILE_DELAY_SECONDS: ${VENDOR_LATE_FILE_DELAY_SECONDS:-60}
+      VENDOR_TRUNCATED_FILE_RATE: ${VENDOR_TRUNCATED_FILE_RATE:-0}
+      VENDOR_SCHEMA_DRIFT: ${VENDOR_SCHEMA_DRIFT:-off}
+      VENDOR_OUTAGE_SCHEDULE: ${VENDOR_OUTAGE_SCHEDULE:-}
+    # host.docker.internal works out of the box on Docker Desktop (mac/windows).
+    # The extra_hosts mapping below makes it resolve on Linux too, so student
+    # services running on the host are reachable from the container.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/healthz').status==200 else 1)"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
