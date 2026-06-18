@@ -17,6 +17,11 @@ name: crater
 
 volumes:
   gh-archive-cache:
+  streaming_data:
+  streaming_checkpoints:
+  spark_pg_data:
+  neo4j_data:
+
 
 services:
   data-init:
@@ -71,4 +76,154 @@ services:
       interval: 5s
       timeout: 3s
       retries: 20
+    restart: unless-stopped
+
+# ─── 3. OUR INGESTOR (המאבטח שמזרים לקפקא) ──────────────────────────────
+  ingestor:
+    build: ./ingestor
+    container_name: ingestor-python
+    shm_size: '256m'  # <-- תוסיף את השורה הזו כדי למנוע SIGBUS
+    mem_limit: 1g     # <-- ודא שיש לו לפחות 1GB לעבד את ה-73MB של ה-GZ
+    depends_on:
+      kafka:
+        condition: service_healthy
+      gh-archive-vendor:
+        condition: service_started
+    restart: unless-stopped
+
+ # ─── 4. KAFKA BROKER ──────────────────────────────────
+  kafka:
+    image: bitnamilegacy/kafka:3.7.0
+    container_name: kafka-broker
+    hostname: kafka
+    environment:
+      - KAFKA_CFG_NODE_ID=1
+      - KAFKA_CFG_PROCESS_ROLES=broker,controller
+      - KAFKA_CFG_CONTROLLER_QUORUM_VOTERS=1@kafka:9093
+      - KAFKA_CFG_LISTENERS=PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093,EXTERNAL://0.0.0.0:29092
+      - KAFKA_CFG_ADVERTISED_LISTENERS=PLAINTEXT://kafka:9092,EXTERNAL://localhost:29092
+      - KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP=CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT
+      - KAFKA_CFG_INTER_BROKER_LISTENER_NAME=PLAINTEXT
+      - KAFKA_CFG_CONTROLLER_LISTENER_NAMES=CONTROLLER
+      - KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE=true
+      - KAFKA_CFG_DEFAULT_REPLICATION_FACTOR=1
+      - KAFKA_CFG_MIN_INSYNC_REPLICAS=1
+      - KAFKA_CFG_NUM_PARTITIONS=6
+      - KAFKA_KRAFT_CLUSTER_ID=streaming-clickstream-cluster
+      - KAFKA_CFG_NUM_NETWORK_THREADS=2
+      - KAFKA_CFG_NUM_IO_THREADS=2
+      - KAFKA_HEAP_OPTS=-Xms256m -Xmx256m
+    ports:
+      - "29092:29092"
+    mem_limit: 512m
+    healthcheck:
+      test: ["CMD", "kafka-broker-api-versions.sh", "--bootstrap-server", "localhost:9092"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
+
+  # ─── 5. KAFKA UI ─────────────────────────────────────
+  kafka-ui:
+    image: ghcr.io/kafbat/kafka-ui:latest
+    container_name: kafka-ui-dashboard
+    hostname: kafka-ui
+    environment:
+      - KAFKA_CLUSTERS_0_NAME=crater-streaming
+      - KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS=kafka:9092
+      - DYNAMIC_CONFIG_ENABLED=true
+    ports:
+      - "28080:8080"
+    mem_limit: 400m
+    depends_on:
+      kafka:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ─── 6. SPARK ENGINE ──────────────────────────
+  spark:
+    build: ./spark
+    container_name: spark
+    hostname: spark
+    user: root
+    environment:
+      - PYSPARK_PYTHON=python3
+      - PYSPARK_DRIVER_PYTHON=python3
+      - PYTHONUNBUFFERED=1
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - PG_URL=jdbc:postgresql://postgres:5432/crater_analytics
+      - PG_HOST=postgres
+      - PG_PORT=5432
+      - PG_DB=crater_analytics
+      - PG_USER=spark
+      - PG_PASSWORD=spark
+      - NEO4J_URL=bolt://neo4j:7687
+      - NEO4J_USER=neo4j
+      - NEO4J_PASSWORD=neo4jpassword
+    working_dir: /home/jovyan/work
+    volumes:
+      - ./src:/home/jovyan/work/src
+      - streaming_data:/home/jovyan/work/data
+      - streaming_checkpoints:/home/jovyan/work/checkpoints
+    command: ["tail", "-f", "/dev/null"]
+    ports:
+      - "18888:8888"
+      - "14040:4040"
+    mem_limit: 2800m
+    depends_on:
+      kafka:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      neo4j:
+        condition: service_healthy
+    # healthcheck:
+    #   test: ["CMD-SHELL", "timeout 2 bash -c '</dev/tcp/localhost/8888' || exit 1"]
+    #   interval: 10s
+    #   timeout: 5s
+    #   retries: 5
+    #   start_period: 30s
+    restart: unless-stopped
+
+  # ─── 7. POSTGRES ANALYST STORE ────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: postgres-server
+    hostname: postgres
+    environment:
+      - POSTGRES_USER=spark
+      - POSTGRES_PASSWORD=spark
+      - POSTGRES_DB=crater_analytics
+    ports:
+      - "5432:5432"
+    volumes:
+      - spark_pg_data:/var/lib/postgresql/data
+    mem_limit: 512m
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U spark -d crater_analytics"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+
+  # ─── 8. NEO4J GRAPH STORE ───────────────────────────
+  neo4j:
+    image: neo4j:5
+    container_name: neo4j-server
+    hostname: neo4j
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    environment:
+      - NEO4J_AUTH=neo4j/neo4jpassword
+    volumes:
+      - neo4j_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget --spider -q http://localhost:7474 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
     restart: unless-stopped

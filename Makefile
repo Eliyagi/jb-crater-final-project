@@ -25,8 +25,16 @@ help:
 	@echo "  make vendor-chaos   Restart gh-archive-vendor with slow/late/truncated/drift/outage on"
 	@echo "  make vendor-calm    Restart gh-archive-vendor with chaos all-off"
 	@echo ""
-	@echo "  Vendor API:  http://localhost:18400/docs"
-	@echo "  Healthcheck: http://localhost:18400/healthz"
+	@echo "  === System Interfaces ==="
+	@echo "  Jupyter Lab UI:   http://localhost:18888  (Token: devtoken)"
+	@echo "  Kafka Dashboard:  http://localhost:28080"
+	@echo "  Spark Live UI:    http://localhost:14040"
+	@echo "  Neo4j Browser:    http://localhost:7474   (User: neo4j / Password: neo4jpassword)"
+	@echo "  Vendor API Docs:  http://localhost:18400/docs"
+	@echo "  Vendor Health:    http://localhost:18400/healthz"
+	@echo "   Once gh-archive-vendor is healthy:"
+	@echo "     curl http://localhost:18400/healthz"
+	@echo "     curl -I http://localhost:18400/2024-01-15-0.json.gz"
 	@echo ""
 
 run:
@@ -37,6 +45,13 @@ run:
 	@echo "   First run downloads the configured GH Archive window."
 	@echo "   Full 6-sim-day default = ~14 GB (~20-40 min). Watch progress:"
 	@echo "     docker compose logs -f data-init"
+	@echo ""
+	@echo "   === Access Your Interfaces ==="
+	@echo "   Jupyter Lab:  http://localhost:18888  (Token: devtoken)"
+	@echo "   Kafka UI:     http://localhost:28080"
+	@echo "   Neo4j Browser:http://localhost:7474"
+	@echo "   Spark UI:     http://localhost:14040"
+	@echo ""
 	@echo "   Once gh-archive-vendor is healthy:"
 	@echo "     curl http://localhost:18400/healthz"
 	@echo "     curl -I http://localhost:18400/2024-01-15-0.json.gz"
@@ -50,6 +65,9 @@ reset:
 
 logs:
 	docker compose logs -f gh-archive-vendor
+
+logs-pipeline:
+	docker compose logs -f ingestor spark
 
 vendor-chaos:
 	VENDOR_SLOW_FILE_RATE=0.10 \
