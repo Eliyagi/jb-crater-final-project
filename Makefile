@@ -56,6 +56,8 @@ run:
 	@echo "     curl http://localhost:18400/healthz"
 	@echo "     curl -I http://localhost:18400/2024-01-15-0.json.gz"
 	@echo "=============================================================="
+	docker stop ingestor-python
+	@echo "   === ingestor stopped ==="
 
 stop:
 	docker compose down --remove-orphans
