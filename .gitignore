@@ -6,7 +6,10 @@ __pycache__/
 .venv/
 .mypy_cache/
 .ruff_cache/
-
+# Spark checkpoints and data
+spark-code/checkpoints/
+spark-code/data_lake/events/
+spark-code/jars/
 # Local config
 .env
 
