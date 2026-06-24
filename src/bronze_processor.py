@@ -1,4 +1,5 @@
 import os
+import sys
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import col, from_json
 from pyspark.sql.types import StructType, StructField, StringType
@@ -26,20 +27,25 @@ INITIAL_EVENT_SCHEMA = StructType([
 # ─────────────────────────────────────────────────────────────────────────────
 
 def create_spark_session() -> SparkSession:
+    # 🌟 תיקון: שינוי ל-local[2] והתאמת הזיכרון למגבלות ה-Compose
     return SparkSession.builder \
         .appName("CraterBronzeProcessor") \
-        .master("local[6]") \
-        .config("spark.driver.memory", "2g") \
-        .config("spark.executor.memory", "2g") \
+        .master("local[1]") \
+        .config("spark.driver.memory", "512m") \
+        .config("spark.executor.memory", "450m") \
+        .config("spark.executor.memoryOverhead", "62m") \
+        .config("spark.cores.max", "1") \
+        .config("spark.task.cpus", "1") \
         .getOrCreate()
 
 def read_kafka_stream(spark: SparkSession, servers: str, topic: str):
+    # 🌟 תיקון: הגבלת האופסטים לטריגר למניעת הכתבה וקריסה (OOM)
     return spark.readStream \
         .format("kafka") \
         .option("kafka.bootstrap.servers", servers) \
         .option("subscribe", topic) \
         .option("startingOffsets", "earliest") \
-        .option("maxOffsetsPerTrigger", 5000) \
+        .option("maxOffsetsPerTrigger", 1500) \
         .load()
 
 def transform_kafka_to_initial_bronze(raw_df):
@@ -50,17 +56,23 @@ def transform_kafka_to_initial_bronze(raw_df):
         .select("data.*")
 
 def write_bronze_stream(parsed_df, output_path: str, checkpoint_path: str):
+    # 🌟 תיקון: הוספת Trigger מבוסס זמן למניעת יצירת קבצי Parquet קטנים מדי
     return parsed_df.writeStream \
         .format("parquet") \
         .option("path", output_path) \
         .option("checkpointLocation", checkpoint_path) \
         .outputMode("append") \
+        .trigger(processingTime='10 seconds') \
         .start()
 
 # ─────────────────────────────────────────────────────────────────────────────
 # MAIN
 # ─────────────────────────────────────────────────────────────────────────────
 def main():
+    print("="*60)
+    print("STARTING BRONZE ENGINE (KAFKA -> PARQUET)...")
+    print("="*60)
+    
     spark = create_spark_session()
     spark.sparkContext.setLogLevel("WARN")
     
@@ -68,6 +80,7 @@ def main():
     parsed_stream = transform_kafka_to_initial_bronze(raw_stream)
     query = write_bronze_stream(parsed_stream, OUTPUT_PATH, CHECKPOINT_PATH)
     
+    print("BRONZE STREAMING QUERY STARTED SUCCESSFULLY.")
     query.awaitTermination()
 
 if __name__ == "__main__":

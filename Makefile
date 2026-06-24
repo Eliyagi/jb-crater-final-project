@@ -56,20 +56,91 @@ run:
 	@echo "     curl http://localhost:18400/healthz"
 	@echo "     curl -I http://localhost:18400/2024-01-15-0.json.gz"
 	@echo "=============================================================="
-	docker stop ingestor-python
-	@echo "   === ingestor stopped ==="
+
+run-full:
+	make run
+	make run-ingestor
+	make run-spark
+
+
+run-ingestor:
+	@echo "🚀 Starting Ingestor for 30 seconds..."
+	docker exec -d ingestor-python python main.py
+	@sleep 30
+	@echo "⏱️ 30 seconds reached! Stopping Ingestor gracefully..."
+	-docker restart ingestor-python
+	@echo "✅ Ingestion cycle finished."
 
 stop:
 	docker compose down --remove-orphans
 
 reset:
+	make reset-files
 	docker compose down -v --remove-orphans
+	-docker volume rm crater_streaming_data crater_streaming_checkpoints 2>/dev/null || true
+
+restart:
+	make reset
+	make run
+
+reset-data:
+	make reset-dbs
+	make reset-files
+	
+reset-files:
+	@echo "🧹 Cleaning Spark Checkpoints & Parquet Data Lake..."
+	@sudo rm -rf ./spark-code/checkpoints
+	@sudo rm -rf ./spark-code/data_lake/events
+	@echo "✨ System is 100% fresh, clean, and ready for a fresh run!"
+
+
+reset-dbs:
+	@echo "🛑 Stopping Neo4j and Postgres to release memory and locks..."
+	@docker stop neo4j-server 
+	
+	@echo "🧼 ReStarting neo4j ..."
+	@docker compose down -v neo4j
+	@docker compose up -d neo4j
+	@echo "⏳ Waiting for Neo4j to initialize (5 seconds)..."
+	@sleep 10
+	
+	@echo "🏛️ Resetting Postgres Schema..."
+	@docker exec -i postgres-server psql -U spark -d crater_analytics -c " \
+		DROP SCHEMA IF EXISTS public CASCADE; \
+		CREATE SCHEMA public; \
+		GRANT ALL ON SCHEMA public TO public; \
+	"
 
 logs:
 	docker compose logs -f gh-archive-vendor
 
 logs-pipeline:
-	docker compose logs -f ingestor spark
+	docker compose logs -f ingestor-python spark-processor 
+
+run-spark:
+	@echo "🚀 Starting Spark Streaming Pipeline..."
+	docker exec -it spark-processor /opt/spark/bin/spark-submit --master 'local[1]' --driver-memory 1g /app/code/pipeline.py
+
+setup-dbs:
+	make setup-neo4j
+	make setup-postgres
+
+setup-neo4j:
+	@echo "🟢 Neo4j is up! Creating constraints..."
+	docker exec -i neo4j-server cypher-shell -u neo4j -p neo4jpassword " \
+		CREATE CONSTRAINT unique_actor IF NOT EXISTS FOR (a:Actor) REQUIRE a.login IS UNIQUE; \
+		CREATE CONSTRAINT unique_repository IF NOT EXISTS FOR (r:Repository) REQUIRE r.name IS UNIQUE;"
+
+setup-postgres:
+	docker exec -it -e PGPASSWORD=spark postgres-server psql -U spark -d crater_analytics -c \
+		"CREATE INDEX IF NOT EXISTS idx_pull_requests_repo_name ON pull_requests(repo_name); \
+ 		 CREATE INDEX IF NOT EXISTS idx_pushes_repo_pusher ON pushes (repo_name, actor_login) INCLUDE (push_id); \
+		 CREATE INDEX IF NOT EXISTS idx_pushes_repo_author ON pushes (repo_name, commit_author_name, commit_author_email) WHERE commit_author_name IS NOT NULL;" \
+
+serving:
+	make setup-dbs
+	@echo "🚀 Starting Spark Serving..."
+	docker exec -it ingestor-python python src/serving.py
 
 vendor-chaos:
 	VENDOR_SLOW_FILE_RATE=0.10 \
