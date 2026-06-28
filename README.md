@@ -1,5 +1,7 @@
 # Crater — Talent Intelligence for Engineering Leaders
 
+A production-grade, chaos-resilient enterprise data engineering pipeline designed to ingest, normalize, and analyze high-velocity GitHub event streams for real-time telemetry and talent analytics.
+
 ## 🚀 Architecture & Design Principles (System Guarantees)
 
 Our system is built to provide reliable insights from high-velocity GitHub event streams. We adhere to three core design principles:
