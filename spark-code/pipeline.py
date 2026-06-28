@@ -134,10 +134,9 @@ def process_micro_batch(batch_df, batch_id):
             .save()
         
         print(f"[Spark Stream] 🕸️ Social network graph updated in Neo4j.")
-        #input("👉 Press ENTER WAITTTTTTTTT.. 👈\n")
+        
     except Exception as e:
         print(f"[Spark Stream] ❌ Error in batch {batch_id}: {str(e)}")
-        input("👉 Press ENTER to clear memory and continue to the next batch... 👈\n")
 
     finally:
         # ניקוי הזיכרון בסוף האיטרציה - חובה למניעת OutOfMemory (OOM)
