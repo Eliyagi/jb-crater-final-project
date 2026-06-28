@@ -25,6 +25,7 @@ KAFKA_TOPIC = os.environ.get("KAFKA_TOPIC", "gh-archive-events")
 # State management: base timeline tracking
 START_DATE = datetime(2024, 1, 15, 0, tzinfo=timezone.utc)
 STATE_FILE = "/tmp/ingestor_high_water_mark.json"
+HISTORY_FILE = "/tmp/ingestor_history.jsonl"
 
 def log(msg: str, level: str = "INFO") -> None:
     print(f"[{datetime.utcnow().isoformat()}Z] [{level}] {msg}", flush=True)
@@ -49,6 +50,17 @@ def save_current_hour(current_hour: datetime) -> None:
             json.dump({"current_hour": current_hour.isoformat()}, f)
     except Exception as e:
         log(f"Failed to persist high-water mark: {e}", "ERROR")
+
+def save_hour_history(filename: str, status: str, error: str = None) -> None:
+    """Stores a record of each file attempt in a JSONL history file."""
+    record = {
+        "timestamp": datetime.utcnow().isoformat(),
+        "filename": filename,
+        "status": status,
+        "error": error
+    }
+    with open(HISTORY_FILE, "a") as f:
+        f.write(json.dumps(record) + "\n")
 
 # ───────────────────────── Chaos-Resilient Processor ──────────────────────────
 
@@ -114,6 +126,8 @@ def main() -> None:
             time.sleep(3)
 
     current_hour = load_current_hour()
+    retries = 0
+    MAX_RETRIES = 5
 
     while True:
         # Format the file path to match the teacher's API route contract: {YYYY-MM-DD-H}.json.gz
@@ -134,27 +148,34 @@ def main() -> None:
                     # Only move high-water mark forward if file was 100% clean and fully read
                     current_hour += timedelta(hours=1)
                     save_current_hour(current_hour)
+                    save_hour_history(filename, "SUCCESS")
+                    retries = 0 # Reset retry counter after successful processing
                 else:
-                    log("Pipeline recovery protocol initiated: Retrying same hour block.", "WARN")
-                    time.sleep(2)
-            
-            # Scenario B: 404 Not Found — Sim clock hasn't reached hour yet or file is Late (Chaos)
-            elif response.status_code == 404:
-                log(f"Target hour {filename} is locked or not generated yet (404). Retrying in 2 seconds.")
-                time.sleep(2)
-                
-            # Scenario C: 503 Service Unavailable — Outage window in effect (Chaos)
-            elif response.status_code == 503:
-                log("Upstream server is down under an Outage Window (503). Backing off...", "WARN")
-                time.sleep(5)
-                
+                    raise Exception("Truncated or corrupted payload detected.")
+            # Scenarios B & C & Others -> Forward to except block for Backoff
             else:
-                log(f"Unexpected status code [{response.status_code}] from vendor mock. Retrying...", "ERROR")
-                time.sleep(5)
-                
-        except requests.RequestException as re:
-            log(f"Network transport error while polling vendor endpoint: {re}", "CRITICAL")
-            time.sleep(5)
+                raise Exception(f"Upstream returned status code: {response.status_code}")
+
+
+        except Exception as e:
+            retries += 1
+            
+            # 404 is expected behavior (simulation clock), others are true errors
+            if "404" in str(e):
+                log(f"Target hour {filename} not generated yet (404). Retrying in 5s.")
+                wait_time = 5
+            else:
+                wait_time = min(60, (2 ** retries))
+                log(f"Attempt {retries} failed: {e}. Retrying in {wait_time}s...", "WARN")
+            
+            save_hour_history(filename, "FAILURE", str(e))
+            time.sleep(wait_time)
+            
+            if retries >= MAX_RETRIES:
+                log("Max retries reached. Resetting counter and waiting...", "ERROR")
+                retries = 0
+                time.sleep(60) 
+
 
 if __name__ == "__main__":
     try:

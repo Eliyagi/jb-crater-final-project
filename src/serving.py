@@ -106,8 +106,8 @@ def query_actor_languages(pg_conn):
             SELECT 
                 pr_author AS developer,
                 language,
-                COUNT(*) AS merge_count,
-                SUM(COUNT(*)) OVER(PARTITION BY pr_author) AS total_merged_prs
+                COUNT(DISTINCT pr_id) AS merge_count,
+                SUM(COUNT(DISTINCT pr_id)) OVER(PARTITION BY pr_author) AS total_merged_prs
             FROM pull_requests
             WHERE action = 'closed' 
             AND is_merged = true 
@@ -174,7 +174,7 @@ def query_repo_authors(pg_conn):
     
     query = """
         WITH top_50_repos AS (
-            -- 1. 50 הרפוז הכי פעילים לפי PR, בתנאי שיש להם פעילות קוד (Pushes)
+            -- 1. 50 הרפוז הכי פעילים לפי PR, בתנאי שיש להם פעילות קוד מינימלית
             SELECT pr.repo_name
             FROM pull_requests pr
             WHERE EXISTS (
@@ -188,14 +188,14 @@ def query_repo_authors(pg_conn):
                 FROM pushes p 
                 WHERE p.repo_name = pr.repo_name AND p.commit_author_name IS NOT NULL
                 GROUP BY p.commit_author_name, p.commit_author_email
-                HAVING COUNT(*) >= 4
+                HAVING SUM(p.commit_count) >= 4  -- תיקון עמודה: שימוש ב-SUM של commit_count
             )
             GROUP BY pr.repo_name
             ORDER BY COUNT(*) DESC
             LIMIT 50
         ),
         ranked_pushers AS (
-            -- 2. טופ 5 פושארים לכל רפו
+            -- 2. טופ 5 פושארים לכל רפו (דירוג לפי כמות push_id ייחודיים)
             SELECT 
                 p.repo_name,
                 p.actor_login AS pusher_name,
@@ -206,18 +206,18 @@ def query_repo_authors(pg_conn):
             GROUP BY p.repo_name, p.actor_login
         ),
         ranked_authors AS (
-            -- 3. טופ 5 מחברי קומיטים לכל רפו
+            -- 3. טופ 5 מחברי קומיטים לכל רפו (מתוקן לפי ה-Schema: סכימת commit_count ודירוג לפיה)
             SELECT 
                 p.repo_name,
                 CONCAT(p.commit_author_name, ' <', p.commit_author_email, '>') AS author_name,
-                COUNT(*) AS commit_count,
-                ROW_NUMBER() OVER (PARTITION BY p.repo_name ORDER BY COUNT(*) DESC) AS rn
+                SUM(p.commit_count) AS commit_count,
+                ROW_NUMBER() OVER (PARTITION BY p.repo_name ORDER BY SUM(p.commit_count) DESC) AS rn
             FROM pushes p
             JOIN top_50_repos t ON p.repo_name = t.repo_name
             WHERE p.commit_author_name IS NOT NULL
             GROUP BY p.repo_name, p.commit_author_name, p.commit_author_email
         )
-        -- 4. השאילתה הראשית נשארת זהה ונקייה
+        -- 4. חיבור הנתונים Side-by-Side (דירוג 1 עד 5 לכל רפו באופן סימטרי)
         SELECT 
             r.repo_name,
             i.rn AS rank,

@@ -59,11 +59,19 @@ run:
 
 run-full:
 	make run
-	make run-ingestor
+	make run-ingestor-30
 	make run-spark
 
-
 run-ingestor:
+	@echo "🚀 Starting Ingestor ..."
+	docker exec ingestor-python python main.py
+
+reset-ingestor:
+	@echo "🛑 Stopping Ingestor ..."
+	-docker restart ingestor-python
+	@echo "✅ Ingestor stopped."
+
+run-ingestor-30:
 	@echo "🚀 Starting Ingestor for 30 seconds..."
 	docker exec -d ingestor-python python main.py
 	@sleep 30
@@ -114,15 +122,19 @@ reset-dbs:
 logs:
 	docker compose logs -f gh-archive-vendor
 
+log-ingestor:
+	docker exec -it ingestor-python cat /tmp/ingestor_history.jsonl
+
 logs-pipeline:
 	docker compose logs -f ingestor-python spark-processor 
 
 run-spark:
+	make setup-neo4j
 	@echo "🚀 Starting Spark Streaming Pipeline..."
 	docker exec -it spark-processor /opt/spark/bin/spark-submit --master 'local[1]' --driver-memory 1g /app/code/pipeline.py
 
 setup-dbs:
-	make setup-neo4j
+	@echo "🛠️ Setting up Neo4j and Postgres databases..."
 	make setup-postgres
 
 setup-neo4j:
@@ -137,16 +149,17 @@ setup-postgres:
  		 CREATE INDEX IF NOT EXISTS idx_pushes_repo_pusher ON pushes (repo_name, actor_login) INCLUDE (push_id); \
 		 CREATE INDEX IF NOT EXISTS idx_pushes_repo_author ON pushes (repo_name, commit_author_name, commit_author_email) WHERE commit_author_name IS NOT NULL;" \
 
+
 serving:
-	make setup-dbs
+	make setup-postgres
 	@echo "🚀 Starting Spark Serving..."
 	docker exec -it ingestor-python python src/serving.py
 
 vendor-chaos:
 	VENDOR_SLOW_FILE_RATE=0.10 \
-	VENDOR_LATE_FILE_RATE=0.15 \
-	VENDOR_LATE_FILE_DELAY_SECONDS=20 \
-	VENDOR_TRUNCATED_FILE_RATE=0.10 \
+	VENDOR_LATE_FILE_RATE=0.10 \
+	VENDOR_LATE_FILE_DELAY_SECONDS=0 \
+	VENDOR_TRUNCATED_FILE_RATE=0.5 \
 	VENDOR_SCHEMA_DRIFT=on \
 	VENDOR_OUTAGE_SCHEDULE=03:00-03:02 \
 	docker compose up -d --no-deps --force-recreate gh-archive-vendor
